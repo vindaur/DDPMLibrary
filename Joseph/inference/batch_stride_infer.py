@@ -27,9 +27,9 @@ import numpy as np
 import torch
 
 from dataset       import OceanCurrentDataset
-from diffusion     import DDPM
-from repaint_model import Repaint
-from repaint_infer import biased_walk_path
+from Joseph.inference.diffusion     import DDPM
+from Joseph.inference.repaint_model import Repaint
+from Joseph.inference.repaint_infer import biased_walk_path
 
 
 # ---------------------------------------------------------------------------
