@@ -1,0 +1,80 @@
+Stride-Based Inference — Overview
+==================================
+
+Background
+----------
+Standard DDPM inference runs the full reverse diffusion chain from t=T-1 down
+to t=0, meaning 999 model forward passes per sample (T=1000).  For RePaint
+with r resample steps per timestep, the total model calls are:
+
+    total_calls = T * r   (e.g. 1000 * 10 = 10,000 per sample)
+
+This is very slow.  The stride approach reduces this by skipping timesteps.
+
+
+What "stride" means
+-------------------
+Instead of stepping t = 999, 998, 997, ..., 1, 0
+we step through a subset:
+
+    timesteps = [0, stride, 2*stride, ..., T-stride]  (then reversed)
+
+So with stride=10 and T=1000 we use 100 timesteps instead of 1000 — a 10x
+speedup.  With stride=50 we use only 20 timesteps — a 50x speedup.
+
+The key is that each reverse step correctly accounts for how far apart the
+two timesteps are.  Instead of computing the posterior for one small beta
+step, we compute it between alpha_bar[t] and alpha_bar[t_prev] directly,
+which spans multiple betas in one jump.  This is valid because alpha_bar
+is a cumulative product and the DDPM posterior formula only depends on
+alpha_bar[t] and alpha_bar[t_prev], not on the individual betas in between.
+
+In code (diffusion.py, p_sample_step):
+    ab      = self.alpha_bar[t_int]
+    ab_prev = self.alpha_bar[t_prev_int]   # t_prev_int = t_int - stride
+
+The posterior mean and variance are computed from ab and ab_prev directly,
+so the jump size does not require any approximation — it is exact within
+the DDPM framework.
+
+
+RePaint resampling with stride
+-------------------------------
+The RePaint loop also uses t_prev_int when resampling (going one step
+forward to re-noise):
+
+    q_sample_from_prev(x_merged, t_int)
+
+This adds noise according to alpha[t_int] (the single-step alpha between
+t_int-1 and t_int), which is a small amount of noise regardless of stride.
+The resampling step is intentionally local — it only adds one beta's worth
+of noise to perturb and re-explore, not a full stride's worth.
+
+
+Strides tested in this experiment
+----------------------------------
+    stride=1   ->  1000 steps  (full chain, baseline)
+    stride=5   ->   200 steps  (5x faster)
+    stride=10  ->   100 steps  (10x faster)
+    stride=20  ->    50 steps  (20x faster)
+    stride=50  ->    20 steps  (50x faster)
+
+Results are compared by RMSE on ocean pixels against the ground-truth
+field for each test sample.  The goal is to find the largest stride
+(fewest steps) that keeps RMSE within an acceptable range of the
+full-chain baseline.
+
+
+Expected trade-off
+------------------
+Small stride  : accurate, slow.  Each denoising step is small and smooth.
+Large stride  : faster, potentially noisier.  Each step jumps further in the
+                noise schedule, so the model must denoise a larger gap in one
+                shot.  At very large strides the model may not have been
+                exposed to these large t_prev jumps during training, leading
+                to degraded reconstruction quality.
+
+The geometric schedule (exponentially spaced betas) concentrates more noise
+change at low t, so striding through the early (low-t) part of the chain
+is less destructive than striding through high-t steps.  This may make the
+geometric schedule more tolerant of large strides than linear or cosine.
